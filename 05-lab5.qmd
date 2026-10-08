@@ -3,3 +3,47 @@ title: "05-lab5"
 format: html
 ---
 
+
+```{r, include=FALSE}
+BiocManager::install("dada2")
+
+BiocManager::install("phyloseq")
+lapply(c("dada2","phyloseq","vegan","tidyverse",
+         "Biostrings"), library, character.only = T)
+
+
+
+
+
+fnFs <- sort(list.files(data_dir, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(data_dir, pattern="_R2_001.fastq", full.names = TRUE))
+
+sample.names <- stringr::str_split_fixed(basename(fnFs),"_",2)[,1]
+
+
+```
+
+
+## Q1
+```{r}
+plotQualityProfile(fnFs)
+plotQualityProfile(fnRs)
+```
+
+```{r, include=FALSE}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,160),
+              maxN=0, maxEE=c(2,2), truncQ = 2 ,rm.phix=TRUE,
+              compress=TRUE, multithread = TRUE)
+
+out2 <- as.data.frame(out) %>% mutate(prop = (100*(reads.out/reads.in)))
+
+
+errF <- learnErrors(filtFs, multithread=T)
+errR <- learnErrors(filtRs, multithread=T)
+```
+
+
+## Q2
+```{r, message=FALSE}
+p <- plotErrors(errR, nominalQ=TRUE)
+```
