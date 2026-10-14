@@ -3,6 +3,18 @@ title: "05-lab5"
 output: html_document
 ---
 
+```{r, eval=FALSE}
+download.file(
+  url = "https://mothur.s3.us-east-2.amazonaws.com/wiki/miseqsopdata.zip",
+  destfile = here::here("data/miseqsopdata.zip"))
+
+unzip("miseqsopdata.zip")
+
+
+download.file(
+  url = "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_wSpecies_train_set.fa.gz?download=1",
+  destfile = here::here(here::here("data/silva_nr99_v138.1_wSpecies_train_set.fa.gz")))
+```
 
 ```{r, include=FALSE}
 BiocManager::install("dada2")
@@ -11,7 +23,7 @@ BiocManager::install("phyloseq")
 lapply(c("dada2","phyloseq","vegan","tidyverse",
          "Biostrings"), library, character.only = T)
 
-
+data_dir <- here::here("data/MiSeq_SOP")
 
 
 
@@ -23,20 +35,6 @@ sample.names <- stringr::str_split_fixed(basename(fnFs),"_",2)[,1]
 
 ```
 
-```{r, eval=FALSE}
-download.file(
-  url = "https://mothur.s3.us-east-2.amazonaws.com/wiki/miseqsopdata.zip",
-  destfile = here::here("data/miseqsopdata.zip"))
-
-unzip("miseqsopdata.zip")
-
-data_dir <- here::here("data/MiSeq_SOP")
-
-
-download.file(
-  url = "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_wSpecies_train_set.fa.gz?download=1",
-  destfile = here::here(here::here("data/silva_nr99_v138.1_wSpecies_train_set.fa.gz")))
-```
 
 ```{r, message=FALSE}
 fnFs <- sort(list.files(data_dir, pattern="_R1_001.fastq", full.names = TRUE))
@@ -73,14 +71,16 @@ errR <- learnErrors(filtRs, multithread=T)
 
 
 ## Q2
-```{r, message=FALSE}
+```{r, message=FALSE, warning=FALSE}
+plotErrors(errF, nominalQ = TRUE)
 plotErrors(errR, nominalQ=TRUE)
 ```
+
 The results for the reverse reads are similar to the forward reads.
 
 
 ## ASV Inference
-```{r, output=FALSE}
+```{r, results="hide"}
 dadaFs <- dada(filtFs, err=errF, multithread = TRUE)
 
 dadaRs <- dada(filtRs, err=errF, multithread = TRUE)
@@ -157,9 +157,6 @@ ASV_tbl <- ASV_tbl %>% filter(row.names(ASV_tbl) %in% taxa3$ASVs)
 taxa3[,(ncol(taxa2)+2):ncol(taxa3)] <- sweep(
   taxa3[,(ncol(taxa2)+2):ncol(taxa3)],2,
   colSums(taxa3[,(ncol(taxa2)+2):ncol(taxa3)]),'/')*100
-
-#Filter again in StringSet
-ASV_seqs[names(ASV_seqs)%in%ASV_tbl2$ASVs]
 ```
 
 ```{r, eval=FALSE}
@@ -212,6 +209,7 @@ rnd <- estimate_richness(
   ps, measures=c("Observed", "ACE","Shannon", "Simpson")) %>% 
   dplyr::select(-se.ACE)
 
+DT::datatable(rnd[1:2])
 ```
 
 ## Q4
@@ -219,3 +217,62 @@ rnd <- estimate_richness(
 write.csv(rnd, file = "rnd_file.csv", row.names=FALSE)
 ```
 
+
+## Q5
+```{r}
+rnd <- rnd %>% mutate(group = row.names(rnd))%>% inner_join(mdta, "group")
+
+rndl <- rnd %>% gather("Estimator", "Value", 1:4) %>% 
+  mutate(rd = if_else(Estimator == "Observed" | Estimator == "ACE", 
+                      "Richness","Diversity"))
+
+ggplot(rndl, aes(x=dpw, y=Value, color = Estimator, fill= Estimator))+
+  geom_bar(stat = "identity", position = position_dodge())+
+  facet_grid(rd~category, scales = "free") + theme_bw() +
+  scale_fill_brewer(palette = "Set1") +
+  scale_color_brewer(palette = "Set1")
+#idk this feels more colourblind friendly but I'm not colourblind...
+```
+
+
+```{r, message=FALSE,results="hide"}
+ps.prop <- transform_sample_counts(ps, function(otu) log1p(otu))
+
+ord.nmds.bray <- ordinate(ps.prop, method="NMDS", distance="bray")
+```
+```{r, warning=FALSE}
+plot_ordination(ps.prop, ord.nmds.bray, color="category", title="Bray NMDS")
+```
+
+```{r}
+top20 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:20]
+ps.top20 <- transform_sample_counts(ps, function(OTU) OTU/sum(OTU)*100)
+ps.top20 <- prune_taxa(top20, ps.top20)
+plot_bar(ps.top20, x="dpw", fill="Family") + facet_wrap(~category, scales="free_x") +
+  ylab("Relative abundance (% of seqs/sample)")
+```
+
+```{r}
+fam <- as.data.frame(taxa3 %>% dplyr::select(Family, where(is.numeric)) %>% 
+  group_by(Family) %>% summarise_all(sum))
+
+
+fam_o <- fam
+
+fam[2:ncol(fam)][fam[2:ncol(fam)]<1] <- 0
+fam_o[2:ncol(fam_o)][fam[2:ncol(fam_o)]>1] <- 0
+
+Others <-colSums(fam_o[2:ncol(fam_o)])
+
+fam[nrow(fam)+1,2:ncol(fam)] <- Others
+fam[nrow(fam),1] <- "Others"
+```
+```{r}
+fam_l <- fam %>% gather("group","relab",2:ncol(fam)) %>%
+  inner_join(mdta,"group")
+
+txplot <- ggplot(fam_l, aes(x = dpw, y=Family, size = relab))+ 
+  geom_point()+
+  facet_wrap(~category, scales = "free_x")
+txplot
+```
