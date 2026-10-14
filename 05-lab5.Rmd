@@ -1,0 +1,184 @@
+---
+title: "05-lab5"
+output: html_document
+---
+
+
+```{r, include=FALSE}
+BiocManager::install("dada2")
+
+BiocManager::install("phyloseq")
+lapply(c("dada2","phyloseq","vegan","tidyverse",
+         "Biostrings"), library, character.only = T)
+
+
+
+
+
+fnFs <- sort(list.files(data_dir, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(data_dir, pattern="_R2_001.fastq", full.names = TRUE))
+
+sample.names <- stringr::str_split_fixed(basename(fnFs),"_",2)[,1]
+
+
+```
+
+```{r, eval=FALSE}
+download.file(
+  url = "https://mothur.s3.us-east-2.amazonaws.com/wiki/miseqsopdata.zip",
+  destfile = here::here("data/miseqsopdata.zip"))
+
+unzip("miseqsopdata.zip")
+
+data_dir <- here::here("data/MiSeq_SOP")
+
+
+download.file(
+  url = "https://zenodo.org/record/4587955/files/silva_nr99_v138.1_wSpecies_train_set.fa.gz?download=1",
+  destfile = here::here(here::here("data/silva_nr99_v138.1_wSpecies_train_set.fa.gz")))
+```
+
+```{r, message=FALSE}
+fnFs <- sort(list.files(data_dir, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(data_dir, pattern="_R2_001.fastq", full.names = TRUE))
+sample.names <- stringr::str_split_fixed(basename(fnFs),"_",2)[,1]
+```
+
+## Q1
+```{r}
+plotQualityProfile(fnFs)
+plotQualityProfile(fnRs)
+```
+
+
+```{r}
+filtFs <- here::here("outputs/filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+names(filtFs) <- sample.names
+
+filtRs <- here::here("outputs/filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtRs) <- sample.names
+```
+
+```{r, message=FALSE}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,160),
+              maxN=0, maxEE=c(2,2), truncQ = 2 ,rm.phix=TRUE,
+              compress=TRUE, multithread = TRUE)
+
+out2 <- as.data.frame(out) %>% mutate(prop = (100*(reads.out/reads.in)))
+
+
+errF <- learnErrors(filtFs, multithread=T)
+errR <- learnErrors(filtRs, multithread=T)
+```
+
+
+## Q2
+```{r, message=FALSE}
+plotErrors(errR, nominalQ=TRUE)
+```
+The results for the reverse reads are similar to the forward reads.
+
+
+## ASV Inference
+```{r, output=FALSE}
+dadaFs <- dada(filtFs, err=errF, multithread = TRUE)
+
+dadaRs <- dada(filtRs, err=errF, multithread = TRUE)
+```
+
+## Merging
+```{r, message=FALSE}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+
+seqtab <- makeSequenceTable(mergers)
+```
+
+## Chimera Removal
+```{r, message=FALSE}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=F, verbose=TRUE)
+```
+
+## Sanity Check
+```{r, message=FALSE}
+getN <- function(x){ 
+  sum(getUniques(x))
+}
+
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+
+
+track <- as.data.frame(track) %>% mutate(prop_kept = round(nonchim/input*100,2))
+
+DT::datatable(track)
+```
+
+
+## Data Polishing 1
+```{r, message=FALSE}
+ASV_tbl <- as.data.frame(seqtab.nochim) %>% 
+  `colnames<-`(base::paste("ASV", seq(1:ncol(seqtab.nochim)), sep = ""))
+
+ASV_tbl <- as.data.frame(t(ASV_tbl[-nrow(ASV_tbl),]))
+
+ASV_tbl <- ASV_tbl %>% mutate(rs = rowSums(ASV_tbl)) %>% 
+  filter(rs > 0) %>% dplyr::select(-rs)
+
+ASV_seqs <- DNAStringSet(base::colnames(seqtab.nochim) %>% 
+  `names<-`(base::paste("ASV",seq(1:ncol(seqtab.nochim)),sep = "")))
+```
+
+## Taxonomic Assignment
+```{r, message=FALSE}
+taxa <- assignTaxonomy(seqtab.nochim, here::here("data/silva_nr99_v138.1_wSpecies_train_set.fa.gz"), multithread=TRUE)
+```
+
+## Data Polishing 2
+```{r, output=FALSE}
+taxa2 <- as.data.frame(taxa) %>% 
+  `row.names<-`(base::paste("ASV", seq(1:nrow(taxa)), sep = ""))
+
+#Filter out unexpected groups
+taxa2 <- taxa2 %>% filter(Family != "Mitochondria") %>% filter(Order != "Chloroplast")
+
+taxa3 <- taxa2 %>% mutate(ASVs = row.names(taxa2)) %>% dplyr::select(ASVs, everything())
+ASV_tbl2 <- ASV_tbl %>% mutate(ASVs=row.names(ASV_tbl)) %>% dplyr::select(ASVs, everything())
+
+#Join the 2 tables
+taxa3 <- taxa3 %>% inner_join(ASV_tbl2, by = "ASVs")
+
+#Keep only ASVs that did not get filtered out
+taxa2 <- taxa2 %>% filter(rownames(taxa2)%in%taxa3$ASVs)
+ASV_tbl <- ASV_tbl %>% filter(row.names(ASV_tbl) %in% taxa3$ASVs)
+
+#Create an abundance column for each sample
+taxa3[,(ncol(taxa2)+2):ncol(taxa3)] <- sweep(
+  taxa3[,(ncol(taxa2)+2):ncol(taxa3)],2,
+  colSums(taxa3[,(ncol(taxa2)+2):ncol(taxa3)]),'/')*100
+
+#Filter again in StringSet
+ASV_seqs[names(ASV_seqs)%in%ASV_tbl2$ASVs]
+```
+
+```{r, eval=FALSE}
+writeXStringSet(ASV_seqs[names(ASV_seqs)%in%ASV_tbl2$ASVs], here::here("outputs/mouse_ASVs.fa"))
+```
+
+
+## Q3
+```{r}
+q3 <- taxa2 %>% filter(is.na(Genus))
+Firm <- q3 %>% filter(Phylum == "Firmicutes")
+Actin <- q3 %>% filter(Phylum == "Actinobacteriota")
+Firm[1,]
+Actin[1,]
+
+targets <- c("ASV22", "ASV207")
+
+fa <- readDNAStringSet("outputs/mouse_ASVs.fa")
+tseqs <- fa[names(fa) %in% targets]
+toString(tseqs[[1]])
+toString(tseqs[[2]])
+```
