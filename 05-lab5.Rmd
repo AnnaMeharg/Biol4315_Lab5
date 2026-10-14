@@ -182,3 +182,40 @@ tseqs <- fa[names(fa) %in% targets]
 toString(tseqs[[1]])
 toString(tseqs[[2]])
 ```
+
+![ASV22 BLAST Results](ASV22_BLAST.png)
+
+![ASV207 BLAST Results](ASV207_BLAST.png)
+
+The top hits for both sequences come from "uncultured bacterium". This means that they were found in environmental samples but never isolated and cultured in a lab, so the species could not be resolved. (Note: there was one hit for "uncultured Coriobacteriales bacterium" for the Actinobacteriota, but that's the same story)
+
+
+```{r, message=FALSE}
+mdta <- read.delim(base::paste(data_dir,"mouse.dpw.metadata", sep = "/" ))
+
+mdta <- mdta %>% mutate(category = if_else(dpw > 100 , "Late","Early")) %>% 
+  mutate(gender = if_else(str_detect(group, "F"),"F","M")) %>%
+  mutate(subject = str_extract(str_split_fixed(group, "D", 2)[,1],"(\\d)+")) %>%
+  `row.names<-`(mdta$group)
+
+#Create phyloseq element
+ps <- phyloseq(otu_table(as.matrix(ASV_tbl), taxa_are_rows=T), 
+               sample_data(mdta), 
+               tax_table(as.matrix(taxa2)))
+
+ps <- merge_phyloseq(ps, ASV_seqs)
+```
+
+
+```{r, message=FALSE, warning=FALSE}
+rnd <- estimate_richness(
+  ps, measures=c("Observed", "ACE","Shannon", "Simpson")) %>% 
+  dplyr::select(-se.ACE)
+
+```
+
+## Q4
+```{r, eval=FALSE}
+write.csv(rnd, file = "rnd_file.csv", row.names=FALSE)
+```
+
